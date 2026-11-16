@@ -16,7 +16,7 @@ checksum = "16d30083d6651c1f6128f498f4d6e56c7f46e970f671de6e163b4cf124333cdd"
 
 [[package]]
 name = "cursed_secp256k1"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cursed_arithmetic",
  "num-bigint",

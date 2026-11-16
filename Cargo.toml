@@ -1,6 +1,6 @@
 [package]
 name = "cursed_secp256k1"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "ECDSA over secp256k1 where every field element is a Vec<Digit> and every operation goes through cursed_arithmetic"
 readme = "README.md"

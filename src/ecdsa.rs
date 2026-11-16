@@ -251,9 +251,10 @@ pub fn sign(message: &[u8], d: &BigNum) -> Result<Signature, KeyError> {
     }
 }
 
-/// Verifies a signature (r, s) on `message` for the public key Q = (qx, qy).
-/// Accepts non-low-S signatures as valid (standard malleability semantics).
-pub fn verify(message: &[u8], r: &BigNum, s: &BigNum, qx: &BigNum, qy: &BigNum) -> bool {
+/// Verifies a signature (r, s) over an already-computed 32-byte digest (e.g.
+/// a Bitcoin sighash) for the public key Q = (qx, qy). Accepts non-low-S
+/// signatures as valid (standard malleability semantics).
+pub fn verify_digest(digest: &[u8; 32], r: &BigNum, s: &BigNum, qx: &BigNum, qy: &BigNum) -> bool {
     let n = constants::order();
 
     // 1 ≤ r,s < n.
@@ -261,9 +262,7 @@ pub fn verify(message: &[u8], r: &BigNum, s: &BigNum, qx: &BigNum, qy: &BigNum) 
         return false;
     }
 
-    // z = H(m) mod n.
-    let h1 = sha256(message);
-    let z_full = bytes_to_big(&h1);
+    let z_full = bytes_to_big(digest);
     let z = &z_full % &n;
 
     // w = s⁻¹ mod n; u1 = z·w mod n; u2 = r·w mod n. Scalar arithmetic is
@@ -289,10 +288,61 @@ pub fn verify(message: &[u8], r: &BigNum, s: &BigNum, qx: &BigNum, qy: &BigNum) 
     rx_mod == *r
 }
 
-/// Convenience: mod_pow re-exported for tests; unused by the crate itself.
-#[doc(hidden)]
-pub fn _export_mod_pow(base: &BigNum, exp: &BigNum, m: &BigNum) -> BigNum {
-    mod_pow(base, exp, m)
+/// Verifies a signature (r, s) on `message` for the public key Q = (qx, qy).
+/// Accepts non-low-S signatures as valid (standard malleability semantics).
+pub fn verify(message: &[u8], r: &BigNum, s: &BigNum, qx: &BigNum, qy: &BigNum) -> bool {
+    let digest = sha256(message);
+    verify_digest(&digest, r, s, qx, qy)
+}
+
+/// Reconstructs the affine y coordinate of a compressed secp256k1 public key.
+/// The compressed form is 33 bytes: `0x02` for even y, `0x03` for odd y,
+/// followed by the 32-byte big-endian x. Returns `None` when x is not a valid
+/// field element (x ≥ p) or has no square root (x³ + 7 is a non-residue).
+///
+/// The square root uses that p ≡ 3 (mod 4): y = (x³ + 7)^((p+1)/4) mod p,
+/// computed with `mod_pow` and the fixed decimal exponent
+/// [`constants::SQRT_EXPONENT`]. The parity fixup subtracts y from p with
+/// `BigNum` arithmetic.
+pub fn decompress_pubkey(compressed: &[u8; 33]) -> Option<(BigNum, BigNum)> {
+    let p = constants::prime();
+    let mut x_bytes = [0u8; 32];
+    x_bytes.copy_from_slice(&compressed[1..]);
+    let x = bytes_to_big(&x_bytes);
+    if x >= p {
+        return None;
+    }
+    let odd = match compressed[0] {
+        0x02 => false,
+        0x03 => true,
+        _ => return None,
+    };
+    // y² = x³ + 7. Three and seven are literal constants; the cube and root
+    // come from the field ops.
+    let seven = BigNum::from(7u128);
+    let y_squared = ((&x * &x * &x) + &seven) % &p;
+    let root = mod_pow(&y_squared, &constants::sqrt_exponent(), &p);
+    // Round trip to confirm the root is genuine (non-residues would need a
+    // check here; residues pass it trivially).
+    if (&root * &root) % &p != y_squared {
+        return None;
+    }
+    // One of root and p − root is even, the other odd.
+    let p_minus_root = &p - &root;
+    let (y_even, y_odd) = if root.is_even() {
+        (&root, &p_minus_root)
+    } else {
+        (&p_minus_root, &root)
+    };
+    let y = if odd { y_odd } else { y_even };
+    Some((x, y.clone()))
+}
+
+/// Interprets bytes as a big-endian integer via `BigNum` Horner in base 256.
+/// Public so callers with wire-format integers can enter the cursed domain
+/// without primitive arithmetic.
+pub fn bytes_to_bignum(bytes: &[u8]) -> BigNum {
+    bytes_to_big(bytes)
 }
 
 #[cfg(test)]
@@ -301,6 +351,92 @@ mod tests {
     use std::str::FromStr;
 
     const X: &str = "91225253027397101270059260515990221874496108017261222445699397644687913215777";
+
+    /// Compressed public key from the hex x with parity 0x02 (reference Qy is
+    /// even). Decompression must reproduce the reference affine point, and
+    /// both verify paths must agree.
+    #[test]
+    fn decompression_round_trips_reference_key() {
+        let d = BigNum::from_str(X).unwrap();
+        let (qx, qy) = public_key(&d).unwrap();
+        // Compressed form: 0x02 (even y) then x as 32 big-endian bytes. The
+        // byte conversion back is done by bytes_to_bignum, mirroring how the
+        // wire format enters the crate.
+        let x_bytes = {
+            let mut acc: Vec<u8> = Vec::new();
+            let mut value = qx.clone();
+            let base = BigNum::from(256u128);
+            let zero = BigNum::zero();
+            while value > zero {
+                let (q, r) = value.div_rem(&base);
+                acc.push(u8::try_from(r.to_u128().unwrap()).unwrap());
+                value = q;
+            }
+            while acc.len() < 32 {
+                acc.push(0);
+            }
+            acc.reverse();
+            acc
+        };
+        let mut compressed = [0u8; 33];
+        compressed[0] = if qy.is_even() { 0x02 } else { 0x03 };
+        compressed[1..].copy_from_slice(&x_bytes);
+        let (dx, dy) = decompress_pubkey(&compressed).unwrap();
+        assert_eq!(dx, qx);
+        assert_eq!(dy, qy);
+    }
+
+    /// A digest-level verification must agree with message-level verify.
+    #[test]
+    fn verify_digest_matches_verify() {
+        let d = BigNum::from_str(X).unwrap();
+        let (qx, qy) = public_key(&d).unwrap();
+        let message = b"digest agreement";
+        let sig = sign(message, &d).unwrap();
+        assert!(verify(message, &sig.r, &sig.s, &qx, &qy));
+        let digest = sha256(message);
+        assert!(verify_digest(&digest, &sig.r, &sig.s, &qx, &qy));
+        // A flipped digest bit must fail.
+        let mut bad = digest;
+        bad[0] ^= 0x01;
+        assert!(!verify_digest(&bad, &sig.r, &sig.s, &qx, &qy));
+    }
+
+    /// x without a cube root of x³ + 7 must be rejected, and invalid prefixes
+    /// rejected.
+    #[test]
+    fn decompression_rejects_invalid() {
+        let mut bad_prefix = [0u8; 33];
+        bad_prefix[0] = 0x04;
+        assert!(decompress_pubkey(&bad_prefix).is_none());
+        // x = p itself is not a field element. p's bytes come from the
+        // constant's decimal digits via BigNum, then to bytes through the
+        // same structural base-256 loop the round-trip test uses.
+        let p = constants::prime();
+        let base = BigNum::from(256u128);
+        let mut acc: Vec<u8> = Vec::new();
+        let mut value = p;
+        let zero = BigNum::zero();
+        while value > zero {
+            let (q, r) = value.div_rem(&base);
+            acc.push(u8::try_from(r.to_u128().unwrap()).unwrap());
+            value = q;
+        }
+        while acc.len() < 32 {
+            acc.push(0);
+        }
+        acc.reverse();
+        let mut x_is_p = [0u8; 33];
+        x_is_p[0] = 0x02;
+        x_is_p[1..].copy_from_slice(&acc);
+        assert!(decompress_pubkey(&x_is_p).is_none());
+        // x = 5: known smallest non-residue for x³ + 7 mod p (verified
+        // externally), so decompression must fail rather than invent a y.
+        let mut x_five = [0u8; 33];
+        x_five[0] = 0x02;
+        x_five[32] = 5;
+        assert!(decompress_pubkey(&x_five).is_none());
+    }
 
     /// The reference key X must lie in [1, n−1] and derive the reference
     /// public key.

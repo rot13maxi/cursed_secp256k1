@@ -84,6 +84,19 @@ pub fn one() -> BigNum {
     BigNum::one()
 }
 
+/// (p + 1) / 4 as decimal digits — the square-root exponent for the field,
+/// valid because p ≡ 3 (mod 4). Used to decompress compressed public keys.
+pub const SQRT_EXPONENT_DIGITS: [u8; 77] = [
+    2, 8, 9, 4, 8, 0, 2, 2, 3, 0, 9, 3, 2, 9, 0, 4, 8, 8, 5, 5, 8, 9, 2, 7, 4, 6, 2, 5, 2, 1, 7, 1,
+    9, 7, 6, 9, 6, 3, 3, 1, 7, 4, 9, 6, 1, 6, 6, 4, 1, 0, 1, 4, 1, 0, 0, 9, 8, 6, 4, 3, 9, 6, 0, 0,
+    1, 9, 7, 7, 2, 0, 8, 6, 6, 7, 9, 1, 6,
+];
+
+/// (p + 1) / 4.
+pub fn sqrt_exponent() -> BigNum {
+    big_from_digits(&SQRT_EXPONENT_DIGITS)
+}
+
 /// The `BigNum` three (doubling formula coefficient, since a = 0).
 pub fn three() -> BigNum {
     BigNum::from(3u8)
