@@ -97,6 +97,16 @@ pub fn sqrt_exponent() -> BigNum {
     big_from_digits(&SQRT_EXPONENT_DIGITS)
 }
 
+/// Compressed-point parity prefix, indexed by the y parity bit: 0x02 (even)
+/// and 0x03 (odd) as a lookup table, so callers need no arithmetic to build
+/// the prefix byte.
+pub const PARITY_PREFIX: [u8; 2] = [2, 3];
+
+/// The compressed prefix for even y.
+pub const PREFIX_EVEN: u8 = 2;
+/// The compressed prefix for odd y.
+pub const PREFIX_ODD: u8 = 3;
+
 /// The `BigNum` three (doubling formula coefficient, since a = 0).
 pub fn three() -> BigNum {
     BigNum::from(3u8)

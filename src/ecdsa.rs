@@ -303,7 +303,8 @@ pub fn verify(message: &[u8], r: &BigNum, s: &BigNum, qx: &BigNum, qy: &BigNum) 
 /// The square root uses that p ≡ 3 (mod 4): y = (x³ + 7)^((p+1)/4) mod p,
 /// computed with `mod_pow` and the fixed decimal exponent
 /// [`constants::SQRT_EXPONENT`]. The parity fixup subtracts y from p with
-/// `BigNum` arithmetic.
+/// `BigNum` arithmetic. The prefix byte must be
+/// [`constants::PREFIX_EVEN`] or [`constants::PREFIX_ODD`].
 pub fn decompress_pubkey(compressed: &[u8; 33]) -> Option<(BigNum, BigNum)> {
     let p = constants::prime();
     let mut x_bytes = [0u8; 32];
@@ -313,8 +314,8 @@ pub fn decompress_pubkey(compressed: &[u8; 33]) -> Option<(BigNum, BigNum)> {
         return None;
     }
     let odd = match compressed[0] {
-        0x02 => false,
-        0x03 => true,
+        constants::PREFIX_EVEN => false,
+        constants::PREFIX_ODD => true,
         _ => return None,
     };
     // y² = x³ + 7. Three and seven are literal constants; the cube and root
@@ -379,7 +380,7 @@ mod tests {
             acc
         };
         let mut compressed = [0u8; 33];
-        compressed[0] = if qy.is_even() { 0x02 } else { 0x03 };
+        compressed[0] = constants::PARITY_PREFIX[usize::from(qy.is_odd())];
         compressed[1..].copy_from_slice(&x_bytes);
         let (dx, dy) = decompress_pubkey(&compressed).unwrap();
         assert_eq!(dx, qx);
@@ -427,13 +428,13 @@ mod tests {
         }
         acc.reverse();
         let mut x_is_p = [0u8; 33];
-        x_is_p[0] = 0x02;
+        x_is_p[0] = constants::PREFIX_EVEN;
         x_is_p[1..].copy_from_slice(&acc);
         assert!(decompress_pubkey(&x_is_p).is_none());
         // x = 5: known smallest non-residue for x³ + 7 mod p (verified
         // externally), so decompression must fail rather than invent a y.
         let mut x_five = [0u8; 33];
-        x_five[0] = 0x02;
+        x_five[0] = constants::PREFIX_EVEN;
         x_five[32] = 5;
         assert!(decompress_pubkey(&x_five).is_none());
     }
